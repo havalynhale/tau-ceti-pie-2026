@@ -1,0 +1,268 @@
+=====================================================================
+  TAU CETI + ROS 2 : MY PERSONAL GUIDE
+=====================================================================
+
+The short version: the ESP32 runs the walking code. The PC (in Ubuntu/WSL)
+sends it commands and shows a live 3D model of what it's doing.
+
+
+---------------------------------------------------------------------
+1. THE PIECES (what is what)
+---------------------------------------------------------------------
+
+  ESP32 firmware .... inverse_v2_balance_ros/inverse_v2_balance_ros.ino
+                      Same IK + gait as inverse_v2_balance. Instead of the
+                      Serial Monitor, it talks ROS over the USB cable.
+
+  Ubuntu (WSL) ...... Linux running inside Windows. ROS 2 only lives here.
+                      Open it from the Start menu -> "Ubuntu".
+                      Commands below with "ros2" go HERE, not in PowerShell.
+
+  micro-ROS agent ... Program in Ubuntu that relays between the ESP32 (USB)
+                      and the rest of ROS. Started by the launch command.
+
+  RViz .............. The 3D viewer window. Started by the launch command.
+
+  teleop.py ......... Keyboard control. Replaces the Serial Monitor.
+
+  usbipd ............ Windows tool that hands the USB port to Ubuntu.
+                      Needed because Ubuntu can't see USB devices by itself.
+
+How they connect:
+
+  [teleop.py] --/cmd--> [agent] --USB--> [ESP32] --> servos
+  [RViz] <-- 3D model <-- /joint_states <-- [agent] <--USB-- [ESP32]
+
+
+---------------------------------------------------------------------
+2. EVERY TIME: HOW TO RUN IT
+---------------------------------------------------------------------
+
+STEP 1. Plug in the ESP32. KEEP THE ROBOT STILL for ~2 seconds after it powers
+        on or resets: that's when the IMU measures its zero point and what
+        "level" is.
+
+        Wiring (ESP32 pins):
+           PCA9685 servo board:  SDA -> GPIO13   SCL -> GPIO14   VCC -> 3V3   GND -> GND
+           IMU (MPU-6050/6500):  SDA -> GPIO21   SCL -> GPIO22   VCC -> 3V3   GND -> GND
+           IMU mounted chip-up, its X arrow -> robot's LEFT, Y arrow -> BACKWARD
+           Servo power goes into the PCA's V+ screw terminal from its own supply.
+           NEVER use GPIO 6-11 (they're the ESP32's internal flash).
+        Check the wiring any time by flashing i2c_check/ and opening a serial
+        monitor at 115200.
+
+STEP 2. Give the USB port to Ubuntu.
+        a) Open an Ubuntu window first (Ubuntu has to be running).
+        b) Open PowerShell AS ADMIN and run:
+
+              usbipd attach --wsl --busid 2-6
+
+        c) Check in Ubuntu that it worked:
+
+              ls /dev/ttyUSB0
+
+           If it prints /dev/ttyUSB0 you're good.
+           If it says "No such file", redo step b.
+
+        (If "2-6" doesn't work, run "usbipd list" and look for the line
+         "CP2102 USB to UART Bridge Controller". Use its BUSID.)
+
+STEP 3. In Ubuntu window #1, start everything:
+
+              ros2 launch tau_ceti display.launch.py
+
+        RViz opens. It's EMPTY at first. That's normal: the robot doesn't
+        know its pose until it stands up.
+        Leave this window running.
+
+STEP 4. In Ubuntu window #2, start the keyboard control:
+
+              ros2 run tau_ceti teleop.py
+
+        Keep this window clicked/focused when pressing keys:
+
+              x   EMERGENCY RELAX: every servo goes limp instantly, even
+                  mid-move. (If on the ground, the robot will drop.)
+                  Then g or z to start again.
+              g   stand up (legs come up one at a time, ~11 seconds)
+              w   walk forward          r   walk backward
+              a   turn left             d   turn right
+              ,   walk sideways left    .   walk sideways right
+                  (direction keys keep going until s or another direction key)
+              s   stop (feet go back to the standing spots)
+              p   print the joint angles + IMU tilt
+              l   leveling on/off (the legs keep the body flat; only when not walking)
+              c   "it's level right now": set the level reference
+                  (robot on flat ground, still, leveling OFF)
+              q   quit teleop
+              z   straight-leg pose (for servo horns), then to fine-tune:
+                  1-4 pick leg, h/t/k pick hip/thigh/knee,
+                  = or + / - move it 1 deg, d prints the offsets for the code
+
+        POWER WARNING: a PCA board's MOSFET already burned once. All 12 servos'
+        current goes through the PCA's V+ input. Keep moves short while testing,
+        feel the PCA + servos now and then, and hit x (or the power switch) if
+        anything gets hot, smells, or a servo buzzes while not moving.
+        Proper fix later: servo power on a separate bus with a fuse.
+
+        TILT STOP: while walking, if the body tips more than 20 degrees the
+        robot freezes where it is and says "TILT STOP". Steady it, then press s
+        to put the feet back. (w is refused until you do.)
+
+        The robot's replies show up as  [robot] ...
+
+STEP 4b. GAME CONTROLLER (optional). Plug it into the PC (USB or Bluetooth),
+        then in PowerShell (Windows, NOT Ubuntu), in the tau-ceti folder:
+
+              python ros2\gamepad_windows.py
+
+        Leave it running. Controls (Xbox names, PlayStation in brackets):
+              Left stick    walk forward/back + sideways (push further = longer steps)
+              Right stick   turn (left/right)
+              A [Cross]     stand up
+              B [Circle]    EMERGENCY RELAX
+              X [Square]    stop, feet back to stand
+              Y [Triangle]  leveling on/off
+              Start [Options]  print status
+              RB / LB [R1/L1]  walk faster / slower (1x .. 2x; faster = more current)
+              D-pad up/down    balance margin more / less (less = less rocking,
+                               closer to tipping; hand-tuned value is 27.5 mm)
+              (keyboard: ] [ for speed, m n for margin)
+        Let go of the sticks = it pauses with all 4 feet down.
+        If the controller is closed/unplugged, the robot stops by itself.
+        Buttons wrong on your controller? 
+
+STEP 5. Watch RViz. After "g" the model appears and moves.
+        Mouse in RViz:  left-drag = rotate   scroll = zoom   middle-drag = pan
+        Colors: b1 red, b2 green, b3 blue, b4 yellow. Orange bar = front.
+        The body stays in the middle and the feet walk under it (that's normal).
+        The body TILTS in RViz the way the real robot tilts (from the IMU).
+        Quick test: tilt the robot by hand and watch the model follow.
+
+TO STOP EVERYTHING: Ctrl+C in both Ubuntu windows (or q in teleop).
+
+
+---------------------------------------------------------------------
+3. WHEN YOU CHANGE THE ARDUINO CODE
+---------------------------------------------------------------------
+
+Option A (easiest, Arduino IDE):
+   - The board must be on the Windows side for this, so in admin PowerShell:
+         usbipd detach --busid 2-6
+   - BUT Windows has no driver for the board's USB chip yet, so there's no
+     COM port. Install the "CP210x USB to UART" driver from Silicon Labs
+     once, then the board shows up as a COM port.
+   - Arduino IDE: Board = "ESP32 Dev Module", pick the COM port, Upload.
+   - Afterwards, do STEP 2 again to give it back to Ubuntu.
+
+Option B (no driver needed, flash from Ubuntu):
+   - In PowerShell (in the tau-ceti folder), compile:
+         & "$env:LOCALAPPDATA\Programs\Arduino IDE\resources\app\lib\backend\resources\arduino-cli.exe" compile --fqbn esp32:esp32:esp32 --output-dir build inverse_v2_balance_ros
+   - Stop the launch (Ctrl+C) so nothing else is using the USB port.
+   - In Ubuntu:
+         cd /mnt/c/Users/haval/Documents/tau-ceti-pie-2026/tau-ceti
+         bash ros2/flash_esp32.sh build inverse_v2_balance_ros
+
+!! Do NOT update the "esp32" board package to 3.x in the Arduino IDE.
+   micro-ROS only works on 2.0.x (we're on 2.0.17). Say no if it asks.
+
+!! Don't add Serial.print() to the ROS sketch. The USB serial is now the
+   ROS data line; prints would scramble it. Use  status("text")  instead,
+   which shows up in teleop as [robot] text.
+
+!! If you change a robot dimension (L1, L2, R, COXA, LEG_ANGLE), change it
+   in BOTH the .ino AND ros2/tau_ceti/launch/display.launch.py.
+
+
+---------------------------------------------------------------------
+4. WHEN SOMETHING'S WRONG
+---------------------------------------------------------------------
+
+"RViz is empty"
+   -> Press g in teleop. Nothing shows until the robot has stood up.
+
+"I press keys and nothing happens / no [robot] replies"
+   1. Is the USB still in Ubuntu?      ls /dev/ttyUSB0
+      No? -> Do STEP 2 again. Unplugging, replugging, or a power blip
+      silently gives the board back to Windows.
+   2. Are TWO launches running? Only ONE agent can use the USB port.
+      Two of them fight and the robot goes silent. Close all Ubuntu windows,
+      start fresh from STEP 3.
+   3. Press the EN (reset) button on the ESP32. Wait for the blue LED to
+      come on (on = connected to the agent). Then press g again.
+
+"Robot replies show up ~20 seconds late, or never" (commands still work)
+   -> ROS programs aren't finding each other on this network (happens on
+      campus Wi-Fi with WSL). Already fixed by:
+         export ROS_AUTOMATIC_DISCOVERY_RANGE=LOCALHOST   (in ~/.bashrc)
+         config/localhost_dds.xml                         (used by the launch file for the agent)
+      If you start the agent by hand instead of with the launch file, add:
+         FASTRTPS_DEFAULT_PROFILES_FILE=~/tau_ceti_ws/src/tau_ceti/config/localhost_dds.xml
+      in front of the ros2 run command.
+
+"PCA9685: NOT FOUND" or "IMU: NOT FOUND" when it connects
+   -> Wiring. Flash i2c_check/ to see which wire is wrong.
+
+"Package 'tau_ceti' not found"
+   -> That Ubuntu window was opened before setup. Run:
+         source ~/tau_ceti_ws/install/setup.bash
+      or just open a new Ubuntu window.
+
+"ModuleNotFoundError: rclpy..." (Python errors from ROS tools)
+   -> Anaconda's Python is getting in the way. teleop.py is already fixed
+      for this. For other tools:  conda deactivate  in that window.
+
+"Permission denied: /dev/ttyUSB0"
+   -> Your user needs the dialout group (already done). If it happens on a
+      new machine:  sudo usermod -aG dialout $USER  then reopen Ubuntu.
+
+The onboard blue LED:
+   on  = connected to the agent, ready for commands
+   off = waiting for the agent (start the launch, or check the USB)
+
+
+---------------------------------------------------------------------
+5. HANDY EXTRAS
+---------------------------------------------------------------------
+
+See every topic:                 ros2 topic list
+Watch what the robot says:       ros2 topic echo /status
+Watch the raw joint angles:      ros2 topic echo /joint_states
+Send one command without teleop: ros2 topic pub --once /cmd std_msgs/msg/String "{data: g}"
+Picture of what's connected:     rqt_graph
+Graph a joint over time:         rqt_plot /joint_states/position[1]
+Graph the IMU (tilt rates):      rqt_plot /imu/angular_velocity/x /imu/angular_velocity/y
+Watch raw IMU data:              ros2 topic echo /imu
+Record a run to replay later:    ros2 bag record /joint_states /status
+Play it back (RViz will move):   ros2 bag play <folder it made>
+
+
+---------------------------------------------------------------------
+6. WHERE THINGS LIVE
+---------------------------------------------------------------------
+
+In the repo (Windows: Documents\tau-ceti-pie-2026\tau-ceti):
+   inverse_v2_balance_ros\        ESP32 ROS firmware
+   inverse_v2_balance\            original firmware (untouched)
+   microros_esp32_test\           tiny test sketch (publishes a counter)
+   i2c_check\                     wiring tester for the PCA9685 + IMU (serial monitor, 115200)
+   ros2\tau_ceti\launch\          display.launch.py (agent + model + IMU tilt + RViz)
+   ros2\tau_ceti\scripts\         teleop.py, imu_tf.py (tilts the body in RViz)
+   ros2\tau_ceti\config\          localhost_dds.xml (network fix for the agent)
+   ros2\tau_ceti\rviz\            saved RViz layout
+   ros2\flash_esp32.sh            flash from Ubuntu
+   ros2\README.md                 short version for the team
+
+In Ubuntu:
+   /opt/ros/jazzy                 ROS 2 itself (version "Jazzy")
+   ~/microros_ws                  the micro-ROS agent
+   ~/tau_ceti_ws                  our package. Its src/tau_ceti is a shortcut
+                                  to ros2/tau_ceti in the repo, so editing the
+                                  repo files is enough. Only if you ADD new
+                                  files, rebuild with:
+                                     cd ~/tau_ceti_ws && colcon build --symlink-install
+   ~/.venvs/esptool               the flashing tool
+
+On Windows:
+   Documents\Arduino\libraries\micro_ros_arduino   micro-ROS library (jazzy)
+   usbipd                                          USB-to-Ubuntu tool
